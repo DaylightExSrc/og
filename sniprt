@@ -1,0 +1,1772 @@
+--!nocheck
+--[[
+	INFIN OG SNIPER · purple edition
+	─────────────────────────────────────────────────────────────
+	• Auto layout: mobile = wide w/ collapsible side tabs · PC = tall w/ tabs across
+	• LIVEBOARD watcher → instant trade to the best OG holder
+	• FIND: username lookup w/ dropdown, in-server / friend-online status, trade button
+	• 3D model previews (Frames, not CanvasGroups — ViewportFrames don't render inside CanvasGroups)
+	• RightShift toggles on PC · minimize → floating logo
+]]
+
+------------------------------------------------------------------ SERVICES
+local Players      = game:GetService("Players")
+local RS           = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local UIS          = game:GetService("UserInputService")
+local RunService   = game:GetService("RunService")
+local CoreGui      = game:GetService("CoreGui")
+local TextService  = game:GetService("TextService")
+local SoundService = game:GetService("SoundService")
+local Debris       = game:GetService("Debris")
+
+local LP     = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+------------------------------------------------------------------ CONFIG
+local GUI_NAME   = "InfinOGSniper"
+local LOGO       = "rbxassetid://88206773600496"
+local BACKGROUND = "rbxassetid://75177996078538"
+local TOGGLE_KEY = Enum.KeyCode.RightShift
+local PING_SOUND = "rbxasset://sounds/electronicpingshort.wav"
+
+-- ▼ TRADE REMOTE — paste your Cobalt-captured path here, e.g.
+--   path = {"ReplicatedStorage", "Packages", "Net", "RE/TradeService/SendRequest"},
+-- leave nil to auto-detect a remote with "trade" + "send/request/invite" in its name
+local TRADE = {
+	path = nil,
+	args = function(plr, animalName)   -- what gets fired to the remote
+		return plr
+	end,
+}
+
+-- ▼ LIVEBOARD — names to look for (workspace + PlayerGui). Set BOARD_PATH to skip searching.
+local BOARD_NAMES = {"liveboard", "livefeed", "spawnboard"}
+local BOARD_PATH  = nil -- e.g. {"Workspace", "Map", "LiveBoard"}
+
+-- tracked OGs — ORDER = PRIORITY (top = best, used for "best only" trades)
+local OG_LIST = {
+	{short = "S.ELEPH",  name = "Strawberry Elephant"},
+	{short = "MEOWL",    name = "Meowl"},
+	{short = "SKIBIDI",  name = "Skibidi Toilet"},
+	{short = "HORSEMAN", name = "Headless Horseman"},
+	{short = "SP.ELEPH", name = "Spider Elephant"},
+	{short = "J.PORK",   name = "John Pork"},
+}
+
+local ANIMAL_PATHS = {
+	{"Models", "Animals"},
+	{"Shared", "Animals"},
+	{"Assets", "Animals"},
+	{"Animals"},
+}
+
+local S = {
+	auto = true, allLogs = false, autoOpen = false, notifyAll = false,
+	notify = true, sound = true, notifyTime = 5,
+	loop = false, loopInterval = 3,
+	autoTrade = true, bestOnly = true, tradeCooldown = 8,
+	uiScale = 1, layout = "AUTO", collapsed = false,
+}
+
+------------------------------------------------------------------ THEME
+local C = {
+	bg      = Color3.fromRGB(9, 5, 16),
+	panel   = Color3.fromRGB(20, 12, 34),
+	card    = Color3.fromRGB(30, 18, 50),
+	card2   = Color3.fromRGB(46, 28, 76),
+	stroke  = Color3.fromRGB(78, 48, 124),
+	glow    = Color3.fromRGB(190, 120, 255),
+	accent  = Color3.fromRGB(168, 85, 247),
+	accent2 = Color3.fromRGB(104, 56, 255),
+	text    = Color3.fromRGB(248, 242, 255),
+	sub     = Color3.fromRGB(172, 152, 208),
+	dim     = Color3.fromRGB(104, 84, 140),
+	white   = Color3.new(1, 1, 1),
+	black   = Color3.new(0, 0, 0),
+	on      = Color3.fromRGB(80, 230, 150),
+	danger  = Color3.fromRGB(255, 82, 112),
+}
+local GLASS = .22
+local F, FB, FR = Enum.Font.GothamBold, Enum.Font.GothamBlack, Enum.Font.Gotham
+
+------------------------------------------------------------------ UNLOAD OLD
+if _G.__INFIN_OG_UNLOAD then pcall(_G.__INFIN_OG_UNLOAD) end
+
+------------------------------------------------------------------ HELPERS
+local running, conns = true, {}
+local function bind(sig, fn) local c = sig:Connect(fn); table.insert(conns, c); return c end
+
+local function merge(a, b)
+	local t = {}
+	for k, v in pairs(a) do t[k] = v end
+	for k, v in pairs(b or {}) do t[k] = v end
+	return t
+end
+local function new(class, props, kids)
+	local o = Instance.new(class)
+	local parent
+	for k, v in pairs(props or {}) do if k == "Parent" then parent = v else o[k] = v end end
+	for _, c in ipairs(kids or {}) do c.Parent = o end
+	if parent then o.Parent = parent end
+	return o
+end
+local function corner(r) return new("UICorner", {CornerRadius = UDim.new(0, r or 8)}) end
+local function stroke(col, th, tr)
+	return new("UIStroke", {Color = col or C.stroke, Thickness = th or 1, Transparency = tr or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+end
+local function pad(l, r, t, b)
+	return new("UIPadding", {PaddingLeft = UDim.new(0, l or 0), PaddingRight = UDim.new(0, r or l or 0),
+		PaddingTop = UDim.new(0, t or 0), PaddingBottom = UDim.new(0, b or t or 0)})
+end
+local function tw(o, t, props, style, dir)
+	local x = TweenService:Create(o, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+	x:Play()
+	return x
+end
+local function label(p)
+	return new("TextLabel", merge({BackgroundTransparency = 1, Font = F, TextColor3 = C.text, TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center}, p))
+end
+local function normalize(s) return (string.lower(tostring(s or "")):gsub("[%s%p_]", "")) end
+local function ago(t)
+	local d = math.max(0, math.floor(os.clock() - t))
+	if d < 60 then return d .. "s ago" end
+	if d < 3600 then return math.floor(d / 60) .. "m ago" end
+	return math.floor(d / 3600) .. "h ago"
+end
+local function shortName(name)
+	if #name <= 9 then return name:upper() end
+	local w = {}
+	for x in name:gmatch("%S+") do table.insert(w, x) end
+	if #w < 2 then return name:sub(1, 9):upper() end
+	return (w[1]:sub(1, 1) .. "." .. w[#w]:sub(1, 6)):upper()
+end
+local function clearGui(f)
+	for _, c in ipairs(f:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+end
+local function avatarOf(id)
+	return "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=150&h=150"
+end
+
+local spinGrads = {}
+
+local function pressFx(b, st)
+	local sc = new("UIScale", {Parent = b})
+	local base
+	b.MouseEnter:Connect(function()
+		if st then base = base or st.Color; tw(st, .15, {Color = base:Lerp(C.white, .3)}) end
+		tw(sc, .15, {Scale = 1.03})
+	end)
+	b.MouseLeave:Connect(function()
+		if st and base then tw(st, .15, {Color = base}) end
+		tw(sc, .15, {Scale = 1})
+	end)
+	b.MouseButton1Down:Connect(function() tw(sc, .08, {Scale = .92}) end)
+	b.MouseButton1Up:Connect(function() tw(sc, .35, {Scale = 1}, Enum.EasingStyle.Back) end)
+end
+
+-- purple gradient button with a rotating glow outline → returns button, textLabel
+local function primary(parent, text, w, h)
+	local b = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(w or 70, h or 26), Parent = parent})
+	new("Frame", {BackgroundColor3 = C.white, Size = UDim2.fromScale(1, 1), Parent = b}, {
+		corner(8),
+		new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2), Rotation = 20}),
+	})
+	local st = stroke(C.white, 1.3, .15)
+	st.Parent = b:FindFirstChildOfClass("Frame")
+	local g = new("UIGradient", {Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, C.accent2), ColorSequenceKeypoint.new(.5, C.glow), ColorSequenceKeypoint.new(1, C.accent2),
+	}), Parent = st})
+	table.insert(spinGrads, g)
+	local lbl = label({Text = text, Font = FB, TextSize = 11, TextColor3 = C.white,
+		TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromScale(1, 1), ZIndex = 2, Parent = b})
+	pressFx(b)
+	return b, lbl
+end
+
+local function ghost(parent, text, w, h, kind)
+	local col = kind == "danger" and C.danger or kind == "on" and C.on or kind == "accent" and C.glow or C.text
+	local b = new("TextButton", {AutoButtonColor = false, Text = text, Font = F, TextSize = 11, TextColor3 = col,
+		BackgroundColor3 = C.card, BackgroundTransparency = .15, Size = UDim2.fromOffset(w or 70, h or 26),
+		Parent = parent}, {corner(8)})
+	local st = stroke(kind and col or C.stroke, 1, kind and .5 or 0)
+	st.Parent = b
+	pressFx(b, st)
+	return b, st
+end
+
+local function input(parent, placeholder)
+	return new("TextBox", {PlaceholderText = placeholder, Text = "", ClearTextOnFocus = false, Font = FR,
+		TextSize = 12, TextColor3 = C.text, PlaceholderColor3 = C.dim, BackgroundColor3 = C.card,
+		BackgroundTransparency = .15, TextXAlignment = Enum.TextXAlignment.Left, Parent = parent},
+		{corner(8), stroke(), pad(10)})
+end
+
+local function getRoot()
+	local ok, h = pcall(function() return gethui() end)
+	if ok and typeof(h) == "Instance" then return h end
+	local ok2 = pcall(function() local f = Instance.new("Folder"); f.Parent = CoreGui; f:Destroy() end)
+	if ok2 then return CoreGui end
+	return LP:WaitForChild("PlayerGui")
+end
+local guiRoot = getRoot()
+local oldGui = guiRoot:FindFirstChild(GUI_NAME)
+if oldGui then oldGui:Destroy() end
+
+------------------------------------------------------------------ MODEL LOOKUP
+local animalRoots, knownAnimals, modelCache, liveByKey = {}, {}, {}, {}
+
+for _, path in ipairs(ANIMAL_PATHS) do
+	local node = RS
+	for _, seg in ipairs(path) do node = node and node:FindFirstChild(seg) end
+	if node and not node:IsA("LuaSourceContainer") then
+		table.insert(animalRoots, node)
+		for _, m in ipairs(node:GetChildren()) do
+			if m:IsA("Model") then knownAnimals[normalize(m.Name)] = m.Name end
+		end
+	end
+end
+
+local function findModel(name)
+	local key = normalize(name)
+	if key == "" then return nil end
+	if modelCache[key] then return modelCache[key] end
+	local fuzzy
+	local function scan(list)
+		for _, d in ipairs(list) do
+			if d:IsA("Model") then
+				local k = normalize(d.Name)
+				if k == key then return d end
+				if not fuzzy and #k >= 4 and #key >= 4 and (k:find(key, 1, true) or key:find(k, 1, true)) then fuzzy = d end
+			end
+		end
+	end
+	local hit
+	for _, root in ipairs(animalRoots) do hit = hit or scan(root:GetDescendants()) end
+	hit = hit or scan(RS:GetDescendants()) or fuzzy
+	if hit then modelCache[key] = hit; return hit end
+	local live = liveByKey[key]
+	if live and live.Parent then return live end
+	return nil
+end
+
+local function cloneModel(m)
+	local ok, c = pcall(function()
+		local arch = m.Archivable
+		m.Archivable = true
+		local cl = m:Clone()
+		m.Archivable = arch
+		return cl
+	end)
+	if not ok or not c then return nil end
+	if c:IsA("Tool") or c:IsA("Accessory") then
+		local mdl = Instance.new("Model")
+		for _, ch in ipairs(c:GetChildren()) do ch.Parent = mdl end
+		c = mdl
+	end
+	for _, d in ipairs(c:GetDescendants()) do
+		if d:IsA("LuaSourceContainer") or d:IsA("Sound") or d:IsA("BillboardGui") or d:IsA("Highlight")
+			or d:IsA("ProximityPrompt") or d:IsA("SurfaceGui") then
+			d:Destroy()
+		elseif d:IsA("BasePart") then
+			d.Anchored = true
+		end
+	end
+	return c
+end
+
+local spinners = {}
+local function makeViewport(parent, src, size, spin)
+	local vf = new("ViewportFrame", {BackgroundColor3 = C.card2, BackgroundTransparency = .3, Size = size,
+		Ambient = Color3.fromRGB(190, 170, 220), LightColor = C.white, LightDirection = Vector3.new(-1, -1, -1),
+		Parent = parent}, {corner(10)})
+	local clone
+	if typeof(src) == "Instance" then
+		clone = cloneModel(src)
+		if not clone then local alt = findModel(src.Name); clone = alt and cloneModel(alt) end
+	elseif src then
+		local m = findModel(src)
+		clone = m and cloneModel(m)
+	end
+	if not clone then
+		label({Text = "?", Font = FB, TextSize = 18, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Center,
+			Size = UDim2.fromScale(1, 1), Parent = vf})
+		return vf, false
+	end
+	clone.Parent = vf
+	local ok, cf, sz = pcall(function() return clone:GetBoundingBox() end)
+	if not ok then return vf, false end
+	local cam = new("Camera", {FieldOfView = 35, Parent = vf})
+	vf.CurrentCamera = cam
+	local r = math.max(sz.Magnitude * .5, .5)
+	local dist = r / math.tan(math.rad(17.5)) * 1.02
+	local center, look = cf.Position, cf.LookVector
+	local h = r * .25
+	cam.CFrame = CFrame.lookAt(center + look * dist + Vector3.new(0, h, 0), center)
+	if spin then
+		table.insert(spinners, {vf = vf, cam = cam, center = center, dist = dist, h = h, a = math.atan2(look.X, look.Z)})
+	end
+	return vf, true
+end
+
+------------------------------------------------------------------ STATE
+local tracked = {}
+for i, og in ipairs(OG_LIST) do
+	table.insert(tracked, {name = og.name, short = og.short or shortName(og.name), key = normalize(og.name),
+		prio = i, seen = 0, last = nil, models = setmetatable({}, {__mode = "k"})})
+end
+
+local events, stats = {}, {seen = 0, og = 0, trades = 0}
+local eventId, liveFloor, feedFloor = 0, 0, 0
+local agoLabels = {}
+local function trackAgo(l, t, prefix)
+	table.insert(agoLabels, {l = l, t = t, p = prefix or ""})
+	l.Text = (prefix or "") .. ago(t)
+end
+
+local function matchTracked(raw)
+	local k = normalize(raw)
+	for _, e in ipairs(tracked) do if e.key == k then return e end end
+end
+local function matchInText(t)
+	local k = normalize(t)
+	if k == "" then return nil end
+	for _, e in ipairs(tracked) do if k:find(e.key, 1, true) then return e end end
+end
+local function rawName(m) return tostring(m:GetAttribute("AnimalName") or m:GetAttribute("Index") or m.Name) end
+local function animalNameOf(m)
+	local raw = rawName(m)
+	local e = matchTracked(raw)
+	if e then return e.name, e end
+	local k = knownAnimals[normalize(raw)]
+	if k then return k end
+end
+local function plotOf(m)
+	local p = m
+	while p and p.Parent and p.Parent ~= workspace do
+		if p.Parent.Name == "Plots" then return p end
+		p = p.Parent
+	end
+end
+local function plotOwner(plot)
+	local a = plot:GetAttribute("Owner") or plot:GetAttribute("OwnerName")
+	if a then return tostring(a) end
+	local v = plot:FindFirstChild("Owner")
+	if v and v:IsA("ObjectValue") and v.Value then return v.Value.Name end
+	if v and v:IsA("StringValue") and v.Value ~= "" then return v.Value end
+	for _, d in ipairs(plot:GetDescendants()) do
+		if d:IsA("TextLabel") and d.Text:find("'s Base") then return (d.Text:gsub("'s Base.*", "")) end
+	end
+	return plot.Name
+end
+local function playerFromTexts(texts)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then
+			local n, dn = normalize(p.Name), normalize(p.DisplayName)
+			for _, t in ipairs(texts) do
+				local k = normalize(t)
+				if k ~= "" and (k == n or k == dn or (#n >= 4 and k:find(n, 1, true)) or (#dn >= 4 and k:find(dn, 1, true))) then
+					return p
+				end
+			end
+		end
+	end
+end
+local function playerByName(name)
+	local k = normalize(name)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if normalize(p.Name) == k or normalize(p.DisplayName) == k then return p end
+	end
+end
+local function countLive(e)
+	local n = 0
+	for m in pairs(e.models) do if m.Parent and m:IsDescendantOf(workspace) then n += 1 end end
+	return n
+end
+
+------------------------------------------------------------------ GUI ROOT
+local Gui = new("ScreenGui", {Name = GUI_NAME, IgnoreGuiInset = true, ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999, Parent = guiRoot})
+
+local notify, selectTab, openGui, closeGui, applyLayout, refreshOG, scanBases, sync
+local updateCounters, rebuildLive, rebuildBoardList, sendTrade
+local minimized, mode, targetScale = true, "side", 1
+local syncers = {}
+sync = function() for _, f in ipairs(syncers) do pcall(f) end end
+
+------------------------------------------------------------------ MAIN WINDOW
+local Main = new("Frame", {Name = "Main", AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5),
+	Size = UDim2.fromOffset(570, 320), BackgroundColor3 = C.bg, ClipsDescendants = true, Active = true,
+	Visible = false, Parent = Gui}, {corner(16)})
+local mainSt = stroke(C.white, 1.4, .1)
+mainSt.Parent = Main
+table.insert(spinGrads, new("UIGradient", {Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, C.accent2), ColorSequenceKeypoint.new(.5, C.glow), ColorSequenceKeypoint.new(1, C.accent2),
+}), Parent = mainSt}))
+local MainScale = new("UIScale", {Scale = 0, Parent = Main})
+
+-- background art + darkening overlay
+new("ImageLabel", {Image = BACKGROUND, ScaleType = Enum.ScaleType.Crop, BackgroundTransparency = 1,
+	Size = UDim2.fromScale(1, 1), ZIndex = -3, Parent = Main}, {corner(16)})
+new("Frame", {BackgroundColor3 = C.bg, BackgroundTransparency = 0, Size = UDim2.fromScale(1, 1), ZIndex = -2,
+	Parent = Main}, {corner(16), new("UIGradient", {Rotation = 90, Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, .55), NumberSequenceKeypoint.new(.5, .35), NumberSequenceKeypoint.new(1, .15),
+	})})})
+
+-- purple embers
+local Fx = new("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = -1, Parent = Main})
+for _ = 1, 26 do
+	local s = math.random(2, 4)
+	local d = new("Frame", {BackgroundColor3 = math.random() > .5 and C.glow or C.accent, BorderSizePixel = 0,
+		BackgroundTransparency = 1, Size = UDim2.fromOffset(s, s), Parent = Fx}, {corner(3)})
+	task.spawn(function()
+		task.wait(math.random() * 6)
+		while running and d.Parent do
+			local x, dur = math.random(), 5 + math.random() * 7
+			d.Position = UDim2.fromScale(x, 1.03)
+			d.BackgroundTransparency = 1
+			tw(d, dur, {Position = UDim2.fromScale(x + (math.random() - .5) * .2, -.05)}, Enum.EasingStyle.Linear)
+			tw(d, dur * .3, {BackgroundTransparency = .25 + math.random() * .4}, Enum.EasingStyle.Sine)
+			task.wait(dur * .7)
+			tw(d, dur * .3, {BackgroundTransparency = 1}, Enum.EasingStyle.Sine)
+			task.wait(dur * .3)
+		end
+	end)
+end
+
+-- header
+local Header = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 56), Active = true, Parent = Main})
+local Logo = new("ImageLabel", {Image = LOGO, BackgroundColor3 = C.card, Position = UDim2.fromOffset(12, 9),
+	Size = UDim2.fromOffset(38, 38), Parent = Header}, {corner(12), stroke(C.stroke, 1, .2)})
+local LogoScale = new("UIScale", {Parent = Logo})
+local Title = label({Text = "INFIN OG SNIPER", Font = FB, TextSize = 16, Position = UDim2.fromOffset(60, 10),
+	Size = UDim2.new(1, -200, 0, 20), Parent = Header})
+new("UIGradient", {Color = ColorSequence.new(C.white, C.glow), Parent = Title})
+local SubTitle = label({Text = "mobile", Font = F, TextSize = 10, TextColor3 = C.sub, Position = UDim2.fromOffset(60, 30),
+	Size = UDim2.new(1, -200, 0, 14), Parent = Header})
+local CaughtPill = new("TextLabel", {Text = "0 caught", Font = F, TextSize = 12, TextColor3 = C.text,
+	BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, AnchorPoint = Vector2.new(1, .5),
+	Position = UDim2.new(1, -52, .5, 0), Size = UDim2.fromOffset(92, 30), Parent = Header}, {corner(15), stroke()})
+local CaughtScale = new("UIScale", {Parent = CaughtPill})
+local MinBtn = ghost(Header, "–", 32, 32)
+MinBtn.TextSize = 16
+MinBtn.AnchorPoint = Vector2.new(1, .5)
+MinBtn.Position = UDim2.new(1, -12, .5, 0)
+MinBtn:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 16)
+new("Frame", {BackgroundColor3 = C.stroke, BackgroundTransparency = .3, BorderSizePixel = 0,
+	Position = UDim2.fromOffset(12, 56), Size = UDim2.new(1, -24, 0, 1), Parent = Main})
+
+-- body
+local Body = new("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 57),
+	Size = UDim2.new(1, 0, 1, -57), Parent = Main})
+local Rail = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Position = UDim2.fromOffset(8, 7),
+	Size = UDim2.new(0, 128, 1, -14), ClipsDescendants = true, Parent = Body}, {corner(12), stroke()})
+local CollapseBtn = ghost(Rail, "«  collapse", 0, 28)
+CollapseBtn.TextColor3 = C.sub
+CollapseBtn.Position = UDim2.fromOffset(5, 5)
+CollapseBtn.Size = UDim2.new(1, -10, 0, 28)
+local TabList = new("ScrollingFrame", {BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.fromOffset(5, 40),
+	Size = UDim2.new(1, -10, 1, -46), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollBarThickness = 2, ScrollBarImageColor3 = C.accent, Parent = Rail})
+local TabLayout = new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = TabList})
+local Content = new("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(144, 7),
+	Size = UDim2.new(1, -152, 1, -14), ClipsDescendants = true, Parent = Body})
+
+------------------------------------------------------------------ PAGES / TABS
+local function makePage(name, toolbarH)
+	local g = new("Frame", {Name = name, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+		Visible = false, Parent = Content})
+	local tb
+	if toolbarH then
+		-- inset 1px so the outline never gets clipped
+		tb = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Position = UDim2.fromOffset(1, 1),
+			Size = UDim2.new(1, -2, 0, toolbarH), Parent = g}, {corner(9), stroke()})
+	end
+	local off = toolbarH and toolbarH + 7 or 1
+	local sc = new("ScrollingFrame", {BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.fromOffset(0, off),
+		Size = UDim2.new(1, 0, 1, -off), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 3, ScrollBarImageColor3 = C.accent, Parent = g}, {
+		new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}),
+		pad(1, 6, 1, 6),
+	})
+	return g, sc, tb
+end
+
+local TAB_DEFS = {
+	{id = "LIVE",     icon = "📡", toolbar = 32},
+	{id = "OG",       icon = "👑"},
+	{id = "FLEECE",   icon = "💰", toolbar = 34},
+	{id = "FEED",     icon = "📜", toolbar = 32},
+	{id = "FIND",     icon = "🔍", toolbar = 36},
+	{id = "CFG",      icon = "🧩"},
+	{id = "SETTINGS", icon = "⚙️"},
+}
+local Tabs, current = {}, nil
+
+for i, def in ipairs(TAB_DEFS) do
+	local b = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.card2,
+		BackgroundTransparency = 1, LayoutOrder = i, Size = UDim2.new(1, 0, 0, 30), Parent = TabList}, {corner(8)})
+	local icon = label({Text = def.icon, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
+		Size = UDim2.new(0, 30, 1, 0), Parent = b})
+	local lbl = label({Text = def.id, TextSize = 11, TextColor3 = C.sub, Position = UDim2.fromOffset(32, 0),
+		Size = UDim2.new(1, -34, 1, 0), Parent = b})
+	local ind = new("Frame", {BackgroundColor3 = C.glow, BackgroundTransparency = 1, BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 0, .5, 0), Size = UDim2.fromOffset(3, 14),
+		Parent = b}, {corner(2)})
+	local page, scroll, toolbar = makePage(def.id, def.toolbar)
+	Tabs[def.id] = {btn = b, icon = icon, label = lbl, ind = ind, page = page, scroll = scroll, toolbar = toolbar}
+	b.MouseButton1Click:Connect(function() selectTab(def.id) end)
+	pressFx(b)
+end
+
+selectTab = function(id)
+	if current == id then return end
+	for n, t in pairs(Tabs) do
+		local on = n == id
+		tw(t.btn, .2, {BackgroundTransparency = on and .2 or 1})
+		tw(t.label, .2, {TextColor3 = on and C.text or C.sub})
+		tw(t.ind, .25, {BackgroundTransparency = on and 0 or 1})
+	end
+	local old = current and Tabs[current].page
+	current = id
+	if old then old.Visible = false end
+	local p = Tabs[id].page
+	p.Visible = true
+	p.Position = mode == "top" and UDim2.fromOffset(0, 16) or UDim2.fromOffset(18, 0)
+	tw(p, .35, {Position = UDim2.new()})
+	if id == "FLEECE" then task.defer(scanBases) end
+end
+
+------------------------------------------------------------------ NOTIFICATIONS
+local NotifyHolder = new("Frame", {BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -12, 0, 60), Size = UDim2.new(0, 290, 1, -80), Parent = Gui}, {
+	new("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right}),
+})
+local NotifyScale = new("UIScale", {Parent = NotifyHolder})
+local notifOrder = 0
+
+local function ping()
+	if not S.sound then return end
+	local s = new("Sound", {SoundId = PING_SOUND, Volume = .6, Parent = SoundService})
+	s:Play()
+	Debris:AddItem(s, 3)
+end
+
+notify = function(title, body, src, kind)
+	if not S.notify or not running then return end
+	notifOrder += 1
+	local accent = kind == "trade" and C.on or kind == "danger" and C.danger or kind == "info" and C.sub or C.glow
+	local holder = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 66), LayoutOrder = notifOrder,
+		Parent = NotifyHolder})
+	local card = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.panel,
+		Size = UDim2.fromScale(1, 1), Position = UDim2.new(1, 40, 0, 0), Parent = holder}, {corner(12)})
+	local st = stroke(C.white, 1.2, .2)
+	st.Parent = card
+	local sg = new("UIGradient", {Color = ColorSequence.new({ColorSequenceKeypoint.new(0, C.bg),
+		ColorSequenceKeypoint.new(.5, accent), ColorSequenceKeypoint.new(1, C.bg)}), Parent = st})
+	table.insert(spinGrads, sg)
+	new("Frame", {BackgroundColor3 = accent, BorderSizePixel = 0, Position = UDim2.fromOffset(0, 12),
+		Size = UDim2.new(0, 3, 1, -24), Parent = card}, {corner(2)})
+	local textX = 14
+	if type(src) == "string" and src:sub(1, 8) == "rbxthumb" then
+		new("ImageLabel", {Image = src, BackgroundColor3 = C.card2, Position = UDim2.fromOffset(10, 9),
+			Size = UDim2.fromOffset(48, 48), Parent = card}, {corner(24), stroke(accent, 1, .3)})
+		textX = 68
+	elseif src then
+		makeViewport(card, src, UDim2.fromOffset(48, 48), true).Position = UDim2.fromOffset(10, 9)
+		textX = 68
+	end
+	label({Text = title:upper(), Font = FB, TextSize = 11, TextColor3 = accent, Position = UDim2.fromOffset(textX, 11),
+		Size = UDim2.new(1, -textX - 10, 0, 14), Parent = card})
+	label({Text = body, Font = F, TextSize = 13, Position = UDim2.fromOffset(textX, 27),
+		Size = UDim2.new(1, -textX - 10, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	label({Text = "just now · tap to open", Font = FR, TextSize = 10, TextColor3 = C.dim,
+		Position = UDim2.fromOffset(textX, 44), Size = UDim2.new(1, -textX - 10, 0, 12), Parent = card})
+	local bar = new("Frame", {BackgroundColor3 = accent, BorderSizePixel = 0, Position = UDim2.new(0, 10, 1, -3),
+		Size = UDim2.new(1, -20, 0, 2), Parent = card}, {corner(1)})
+
+	tw(card, .5, {Position = UDim2.new()}, Enum.EasingStyle.Back)
+	tw(bar, S.notifyTime, {Size = UDim2.new(0, 0, 0, 2)}, Enum.EasingStyle.Linear)
+	ping()
+
+	local gone = false
+	local function dismiss()
+		if gone then return end
+		gone = true
+		tw(card, .3, {Position = UDim2.new(1, 40, 0, 0)}, Enum.EasingStyle.Quint, Enum.EasingDirection.In).Completed:Wait()
+		tw(holder, .2, {Size = UDim2.new(1, 0, 0, 0)}).Completed:Wait()
+		holder:Destroy()
+	end
+	card.MouseButton1Click:Connect(function()
+		if minimized then openGui() end
+		selectTab(kind == "trade" and "OG" or "LIVE")
+		task.spawn(dismiss)
+	end)
+	task.delay(S.notifyTime, dismiss)
+
+	local list = {}
+	for _, c in ipairs(NotifyHolder:GetChildren()) do if c:IsA("Frame") then table.insert(list, c) end end
+	if #list > 4 then
+		table.sort(list, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+		list[1]:Destroy()
+	end
+end
+
+------------------------------------------------------------------ TRADE SYSTEM
+local tradeRemote
+local function resolvePath(path)
+	local node = game
+	for _, seg in ipairs(path) do
+		node = node:FindFirstChild(seg)
+		if not node then return nil end
+	end
+	return node
+end
+local function resolveTradeRemote()
+	if TRADE.path then
+		local r = resolvePath(TRADE.path)
+		if r then tradeRemote = r; return r end
+	end
+	local best, bestScore
+	for _, d in ipairs(RS:GetDescendants()) do
+		if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+			local n = d.Name:lower()
+			if n:find("trade") then
+				local s = 1
+				for _, w in ipairs({"send", "request", "invite", "offer", "start"}) do if n:find(w) then s += 2 end end
+				for _, w in ipairs({"accept", "decline", "cancel", "ready", "confirm", "update", "remove", "add", "set"}) do
+					if n:find(w) then s -= 3 end
+				end
+				if not bestScore or s > bestScore then best, bestScore = d, s end
+			end
+		end
+	end
+	tradeRemote = best
+	return best
+end
+
+local lastTrade = {}
+sendTrade = function(plr, animalName)
+	if typeof(plr) ~= "Instance" or not plr.Parent then return false, "offline" end
+	if plr == LP then return false, "self" end
+	local last = lastTrade[plr.UserId]
+	if last and os.clock() - last < S.tradeCooldown then return false, "cooldown" end
+	local r = (tradeRemote and tradeRemote.Parent and tradeRemote) or resolveTradeRemote()
+	if not r then
+		notify("NO TRADE REMOTE", "set TRADE.path at the top of the script", nil, "danger")
+		return false, "no remote"
+	end
+	lastTrade[plr.UserId] = os.clock()
+	local args = table.pack(TRADE.args(plr, animalName))
+	task.spawn(function()
+		local ok, err = pcall(function()
+			if r:IsA("RemoteFunction") then
+				r:InvokeServer(table.unpack(args, 1, args.n))
+			else
+				r:FireServer(table.unpack(args, 1, args.n))
+			end
+		end)
+		if not ok then notify("TRADE FAILED", tostring(err):sub(1, 60), nil, "danger") end
+	end)
+	stats.trades += 1
+	notify("TRADE SENT", "@" .. plr.Name .. (animalName and (" · " .. animalName) or ""), avatarOf(plr.UserId), "trade")
+	updateCounters()
+	return true
+end
+
+local function tradeButton(parent, plr, animalName, w)
+	local b, lbl = primary(parent, "TRADE", w or 64, 26)
+	b.AnchorPoint = Vector2.new(1, .5)
+	b.Position = UDim2.new(1, -10, .5, 0)
+	b.MouseButton1Click:Connect(function()
+		local ok, why = sendTrade(plr, animalName)
+		lbl.Text = ok and "SENT" or string.upper(why or "fail")
+		task.delay(2.5, function() if lbl.Parent then lbl.Text = "TRADE" end end)
+	end)
+	return b, lbl
+end
+
+------------------------------------------------------------------ EVENT CARDS
+local liveCards, feedCards = {}, {}
+
+local function popIn(card)
+	local sc = new("UIScale", {Scale = .9, Parent = card})
+	local bt = card.BackgroundTransparency
+	card.BackgroundTransparency = 1
+	tw(card, .3, {BackgroundTransparency = bt})
+	tw(sc, .4, {Scale = 1}, Enum.EasingStyle.Back)
+end
+
+local function eventCard(parent, evt, list)
+	local card = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 58),
+		LayoutOrder = -evt.id, Parent = parent}, {corner(10)})
+	stroke(evt.og and C.accent or C.stroke, 1, evt.og and .3 or 0).Parent = card
+	makeViewport(card, evt.model or evt.name, UDim2.fromOffset(46, 46), false).Position = UDim2.fromOffset(6, 6)
+	if evt.player then
+		new("ImageLabel", {Image = avatarOf(evt.player.UserId), BackgroundColor3 = C.card2, Position = UDim2.fromOffset(34, 32),
+			Size = UDim2.fromOffset(22, 22), ZIndex = 3, Parent = card}, {corner(11), stroke(C.glow, 1, .2)})
+	end
+	label({Text = evt.name, TextSize = 13, Position = UDim2.fromOffset(62, 8), Size = UDim2.new(1, -140, 0, 18),
+		TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	local tagText = evt.kind == "board" and "BOARD" or evt.og and "OG" or "SPAWN"
+	local tagW = evt.kind == "board" and 42 or evt.og and 26 or 44
+	new("TextLabel", {Text = tagText, Font = FB, TextSize = 9, BackgroundColor3 = evt.og and C.accent or C.card2,
+		TextColor3 = evt.og and C.white or C.sub, Position = UDim2.fromOffset(62, 31), Size = UDim2.fromOffset(tagW, 15),
+		Parent = card}, {corner(5)})
+	local agoL = label({Font = FR, TextSize = 11, TextColor3 = C.sub, Position = UDim2.fromOffset(68 + tagW, 30),
+		Size = UDim2.new(1, -(150 + tagW), 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	trackAgo(agoL, evt.t, evt.player and ("@" .. evt.player.Name .. " · ") or "spawned ")
+	if evt.player then tradeButton(card, evt.player, evt.name) end
+	popIn(card)
+	table.insert(list, 1, card)
+	while #list > 60 do table.remove(list):Destroy() end
+	return card
+end
+
+------------------------------------------------------------------ LIVE TAB
+local Live = Tabs.LIVE
+new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 5),
+	VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Parent = Live.toolbar})
+pad(10, 6).Parent = Live.toolbar
+local LiveSeen = label({Text = "0 seen", TextSize = 11, Size = UDim2.fromOffset(48, 22), LayoutOrder = 1, Parent = Live.toolbar})
+local LiveOG = label({Text = "0 OG", TextSize = 11, TextColor3 = C.glow, Size = UDim2.fromOffset(40, 22), LayoutOrder = 2,
+	Parent = Live.toolbar})
+local AutoBtn = ghost(Live.toolbar, "AUTO: ON", 66, 22, "accent")
+AutoBtn.LayoutOrder = 3
+AutoBtn.TextSize = 10
+local AllBtn = ghost(Live.toolbar, "OG LOGS", 60, 22)
+AllBtn.LayoutOrder = 4
+AllBtn.TextSize = 10
+local LiveClear = ghost(Live.toolbar, "CLEAR", 48, 22, "danger")
+LiveClear.LayoutOrder = 5
+LiveClear.TextSize = 10
+local LiveEmpty = label({Text = "waiting for events...", Font = FR, TextSize = 14, TextColor3 = C.sub,
+	TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 120), LayoutOrder = 1e9, Parent = Live.scroll})
+
+AutoBtn.MouseButton1Click:Connect(function() S.auto = not S.auto; sync() end)
+AllBtn.MouseButton1Click:Connect(function() S.allLogs = not S.allLogs; sync(); rebuildLive() end)
+LiveClear.MouseButton1Click:Connect(function() liveFloor = eventId; rebuildLive() end)
+table.insert(syncers, function()
+	AutoBtn.Text = S.auto and "AUTO: ON" or "AUTO: OFF"
+	AutoBtn.TextColor3 = S.auto and C.on or C.sub
+	AllBtn.Text = S.allLogs and "ALL LOGS" or "OG LOGS"
+end)
+
+rebuildLive = function()
+	for _, c in ipairs(liveCards) do c:Destroy() end
+	table.clear(liveCards)
+	for i = math.min(#events, 60), 1, -1 do
+		local e = events[i]
+		if e.id > liveFloor and (e.og or S.allLogs) then eventCard(Live.scroll, e, liveCards) end
+	end
+	LiveEmpty.Visible = #liveCards == 0
+end
+
+------------------------------------------------------------------ FEED TAB
+local Feed = Tabs.FEED
+local FeedCount = label({Text = "0 spawns logged", TextSize = 12, Position = UDim2.fromOffset(12, 0),
+	Size = UDim2.new(1, -90, 1, 0), Parent = Feed.toolbar})
+local FeedClear = ghost(Feed.toolbar, "CLEAR", 54, 22, "danger")
+FeedClear.TextSize = 10
+FeedClear.AnchorPoint = Vector2.new(1, .5)
+FeedClear.Position = UDim2.new(1, -6, .5, 0)
+local FeedEmpty = label({Text = "no spawns yet", Font = FR, TextSize = 14, TextColor3 = C.sub,
+	TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 120), LayoutOrder = 1e9, Parent = Feed.scroll})
+FeedClear.MouseButton1Click:Connect(function()
+	feedFloor = eventId
+	for _, c in ipairs(feedCards) do c:Destroy() end
+	table.clear(feedCards)
+	FeedEmpty.Visible = true
+end)
+
+updateCounters = function()
+	CaughtPill.Text = stats.og .. " caught"
+	LiveSeen.Text = stats.seen .. " seen"
+	LiveOG.Text = stats.og .. " OG"
+	FeedCount.Text = stats.seen .. " spawns · " .. stats.trades .. " trades sent"
+end
+
+------------------------------------------------------------------ OG TAB · carousel
+local OGs = Tabs.OG
+local Car = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 122),
+	LayoutOrder = 1, Parent = OGs.scroll}, {corner(12), stroke()})
+label({Text = "TRACKED OGS", Font = FB, TextSize = 10, TextColor3 = C.sub, Position = UDim2.fromOffset(12, 4),
+	Size = UDim2.new(1, -80, 0, 18), Parent = Car})
+local PageText = label({Text = "1 / 1", Font = F, TextSize = 10, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Right,
+	Position = UDim2.new(1, -72, 0, 4), Size = UDim2.fromOffset(60, 18), Parent = Car})
+local Clip = new("Frame", {BackgroundTransparency = 1, ClipsDescendants = true, Position = UDim2.fromOffset(32, 24),
+	Size = UDim2.new(1, -64, 0, 86), Parent = Car})
+local TrackF = new("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = Clip})
+local PrevB = ghost(Car, "‹", 22, 40)
+PrevB.TextSize = 18
+PrevB.AnchorPoint = Vector2.new(0, .5)
+PrevB.Position = UDim2.new(0, 6, 0, 67)
+local NextB = ghost(Car, "›", 22, 40)
+NextB.TextSize = 18
+NextB.AnchorPoint = Vector2.new(1, .5)
+NextB.Position = UDim2.new(1, -6, 0, 67)
+local Dots = new("Frame", {BackgroundTransparency = 1, AnchorPoint = Vector2.new(.5, 0), Position = UDim2.new(.5, 0, 0, 113),
+	Size = UDim2.fromOffset(120, 5), Parent = Car}, {
+	new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4),
+		HorizontalAlignment = Enum.HorizontalAlignment.Center}),
+})
+
+local page, pageCount, lastInteract = 1, 1, 0
+local selectedOG
+local pages = {}
+
+local function goPage(i, user)
+	if pageCount == 0 then return end
+	page = ((i - 1) % pageCount) + 1
+	if user then lastInteract = os.clock() end
+	tw(TrackF, .5, {Position = UDim2.fromScale(-(page - 1), 0)})
+	PageText.Text = page .. " / " .. pageCount
+	for idx, d in ipairs(Dots:GetChildren()) do
+		if d:IsA("Frame") then
+			local on = d.LayoutOrder == page
+			tw(d, .3, {Size = UDim2.fromOffset(on and 16 or 5, 5), BackgroundColor3 = on and C.glow or C.dim})
+		end
+		local _ = idx
+	end
+	for k, chip in ipairs(pages[page] or {}) do
+		local sc = chip:FindFirstChild("PopScale")
+		if sc then
+			sc.Scale = .85
+			task.delay((k - 1) * .06, function() tw(sc, .4, {Scale = 1}, Enum.EasingStyle.Back) end)
+		end
+	end
+end
+PrevB.MouseButton1Click:Connect(function() goPage(page - 1, true) end)
+NextB.MouseButton1Click:Connect(function() goPage(page + 1, true) end)
+
+local function selectOG(e)
+	selectedOG = (selectedOG == e) and nil or e
+	for _, t in ipairs(tracked) do
+		if t.chip then
+			local on = t == selectedOG
+			tw(t.chip.st, .2, {Color = on and C.glow or C.stroke, Transparency = on and 0 or .1})
+			tw(t.chip.btn, .2, {BackgroundColor3 = on and C.card2 or C.card})
+		end
+	end
+	rebuildBoardList()
+end
+
+local function buildChipModel(e)
+	if not e.chip then return end
+	clearGui(e.chip.vpHolder)
+	local vp, ok = makeViewport(e.chip.vpHolder, e.name, UDim2.fromScale(1, 1), true)
+	vp.BackgroundTransparency = 1
+	e.hasModel = ok
+end
+
+local function rebuildOGCarousel()
+	clearGui(TrackF)
+	clearGui(Dots)
+	table.clear(pages)
+	pageCount = math.max(1, math.ceil(#tracked / 3))
+	for p = 1, pageCount do
+		local pf = new("Frame", {BackgroundTransparency = 1, Position = UDim2.fromScale(p - 1, 0), Size = UDim2.fromScale(1, 1),
+			Parent = TrackF}, {new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+			HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder})})
+		pages[p] = {}
+		new("Frame", {BackgroundColor3 = C.dim, BorderSizePixel = 0, Size = UDim2.fromOffset(5, 5), LayoutOrder = p,
+			Parent = Dots}, {corner(3)})
+		for k = 1, 3 do
+			local e = tracked[(p - 1) * 3 + k]
+			if e then
+				local chip = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.card,
+					BackgroundTransparency = .1, LayoutOrder = k, Size = UDim2.new(1 / 3, -4, 1, 0), Parent = pf}, {corner(10)})
+				new("UIScale", {Name = "PopScale", Parent = chip})
+				local st = stroke(C.stroke, 1, .1)
+				st.Parent = chip
+				local vpHolder = new("Frame", {BackgroundTransparency = 1, AnchorPoint = Vector2.new(.5, 0),
+					Position = UDim2.new(.5, 0, 0, 4), Size = UDim2.fromOffset(48, 48), Parent = chip})
+				label({Text = e.short, Font = FB, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Center,
+					Position = UDim2.fromOffset(2, 54), Size = UDim2.new(1, -4, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd,
+					Parent = chip})
+				local sub = label({Text = "seen 0", Font = FR, TextSize = 9, TextColor3 = C.sub,
+					TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(2, 68), Size = UDim2.new(1, -4, 0, 12),
+					Parent = chip})
+				e.chip = {btn = chip, st = st, sub = sub, vpHolder = vpHolder}
+				buildChipModel(e)
+				chip.MouseButton1Click:Connect(function() lastInteract = os.clock(); selectOG(e) end)
+				pressFx(chip, st)
+				table.insert(pages[p], chip)
+			end
+		end
+	end
+	goPage(math.min(page, pageCount))
+end
+
+refreshOG = function()
+	for _, e in ipairs(tracked) do
+		if e.chip then
+			local n = countLive(e)
+			e.chip.sub.Text = n > 0 and (n .. " in server") or ("seen " .. e.seen)
+			e.chip.sub.TextColor3 = n > 0 and C.on or C.sub
+			if not e.hasModel and findModel(e.name) then buildChipModel(e) end
+		end
+	end
+end
+
+------------------------------------------------------------------ OG TAB · liveboard panel
+local BoardHead = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 36),
+	LayoutOrder = 2, Parent = OGs.scroll}, {corner(10), stroke()})
+local BoardDot = new("Frame", {BackgroundColor3 = C.dim, AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 12, .5, 0),
+	Size = UDim2.fromOffset(8, 8), Parent = BoardHead}, {corner(4)})
+label({Text = "LIVEBOARD", Font = FB, TextSize = 12, Position = UDim2.fromOffset(26, 0), Size = UDim2.fromOffset(80, 36),
+	Parent = BoardHead})
+local BoardStatus = label({Text = "searching...", Font = FR, TextSize = 10, TextColor3 = C.sub,
+	Position = UDim2.fromOffset(104, 0), Size = UDim2.new(1, -220, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd,
+	Parent = BoardHead})
+local AutoTradeBtn = ghost(BoardHead, "AUTO TRADE: ON", 104, 24, "on")
+AutoTradeBtn.TextSize = 10
+AutoTradeBtn.AnchorPoint = Vector2.new(1, .5)
+AutoTradeBtn.Position = UDim2.new(1, -6, .5, 0)
+AutoTradeBtn.MouseButton1Click:Connect(function() S.autoTrade = not S.autoTrade; sync() end)
+table.insert(syncers, function()
+	AutoTradeBtn.Text = S.autoTrade and "AUTO TRADE: ON" or "AUTO TRADE: OFF"
+	AutoTradeBtn.TextColor3 = S.autoTrade and C.on or C.sub
+end)
+
+local BoardList = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+	LayoutOrder = 3, Parent = OGs.scroll}, {new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})})
+
+local boardEntries = {}
+local function boardCard(be)
+	local card = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 56),
+		LayoutOrder = -be.id, Parent = BoardList}, {corner(10)})
+	stroke(be.player and C.accent or C.stroke, 1, be.player and .3 or 0).Parent = card
+	makeViewport(card, be.entry.name, UDim2.fromOffset(44, 44), false).Position = UDim2.fromOffset(6, 6)
+	if be.player then
+		new("ImageLabel", {Image = avatarOf(be.player.UserId), BackgroundColor3 = C.card2, Position = UDim2.fromOffset(32, 30),
+			Size = UDim2.fromOffset(22, 22), ZIndex = 3, Parent = card}, {corner(11), stroke(C.glow, 1, .2)})
+	end
+	label({Text = be.entry.name, TextSize = 13, Position = UDim2.fromOffset(60, 8), Size = UDim2.new(1, -140, 0, 18),
+		TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	local who = label({Font = FR, TextSize = 11, TextColor3 = C.sub, Position = UDim2.fromOffset(60, 28),
+		Size = UDim2.new(1, -140, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	trackAgo(who, be.t, (be.player and ("@" .. be.player.Name) or (be.rawWho or "unknown")) .. (be.old and " · old · " or " · "))
+	if be.player then
+		tradeButton(card, be.player, be.entry.name)
+	else
+		label({Text = "not in server", Font = FR, TextSize = 10, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Right,
+			AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -10, .5, 0), Size = UDim2.fromOffset(80, 20), Parent = card})
+	end
+	popIn(card)
+	return card
+end
+
+local BoardEmpty
+rebuildBoardList = function()
+	clearGui(BoardList)
+	local n = 0
+	for _, be in ipairs(boardEntries) do
+		if n >= 40 then break end
+		if not selectedOG or be.entry == selectedOG then n += 1; boardCard(be) end
+	end
+	if n == 0 then
+		BoardEmpty = label({Text = selectedOG and ("no " .. selectedOG.name .. " on the board yet") or "no OGs on the liveboard yet",
+			Font = FR, TextSize = 13, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Center,
+			Size = UDim2.new(1, 0, 0, 70), Parent = BoardList})
+	end
+end
+
+------------------------------------------------------------------ FLEECE TAB
+local Flc = Tabs.FLEECE
+local FleeceInfo = label({Text = "bases: —", TextSize = 12, Position = UDim2.fromOffset(12, 0),
+	Size = UDim2.new(1, -110, 1, 0), Parent = Flc.toolbar})
+local FleeceScan, FleeceLbl = primary(Flc.toolbar, "SCAN BASES", 92, 24)
+FleeceScan.AnchorPoint = Vector2.new(1, .5)
+FleeceScan.Position = UDim2.new(1, -6, .5, 0)
+local _ = FleeceLbl
+
+scanBases = function()
+	clearGui(Flc.scroll)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then FleeceInfo.Text = "no Plots folder found"; return end
+	local owners = {}
+	for _, plot in ipairs(plots:GetChildren()) do
+		local list, total, ogs, bestE = {}, 0, 0, nil
+		for _, d in ipairs(plot:GetDescendants()) do
+			if d:IsA("Model") then
+				local nm, e = animalNameOf(d)
+				if nm then
+					list[nm] = list[nm] or {n = 0, og = e ~= nil}
+					list[nm].n += 1
+					total += 1
+					if e then
+						ogs += 1
+						e.models[d] = true
+						if not bestE or e.prio < bestE.prio then bestE = e end
+					end
+				end
+			end
+		end
+		if total > 0 then
+			local owner = plotOwner(plot)
+			table.insert(owners, {owner = owner, plr = playerByName(owner), list = list, total = total, ogs = ogs, best = bestE})
+		end
+	end
+	table.sort(owners, function(a, b)
+		if a.ogs ~= b.ogs then return a.ogs > b.ogs end
+		return a.total > b.total
+	end)
+	local ogBases = 0
+	for i, o in ipairs(owners) do
+		if o.ogs > 0 then ogBases += 1 end
+		local parts = {}
+		for nm, v in pairs(o.list) do
+			local s = nm .. (v.n > 1 and (" ×" .. v.n) or "")
+			table.insert(parts, v.og and ("<font color=\"#BE78FF\"><b>" .. s .. "</b></font>") or s)
+		end
+		local card = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = i, Parent = Flc.scroll}, {corner(10), pad(10, 10, 10, 10)})
+		stroke(o.ogs > 0 and C.accent or C.stroke, 1, o.ogs > 0 and .3 or 0).Parent = card
+		if o.plr then
+			new("ImageLabel", {Image = avatarOf(o.plr.UserId), BackgroundColor3 = C.card2, Size = UDim2.fromOffset(28, 28),
+				Parent = card}, {corner(14)})
+		end
+		local tx = o.plr and 36 or 0
+		label({Text = o.owner, Font = FB, TextSize = 13, Position = UDim2.fromOffset(tx, 0), Size = UDim2.new(1, -tx - 80, 0, 16),
+			Parent = card})
+		label({Text = o.ogs > 0 and (o.ogs .. " OG · " .. o.total .. " total") or (o.total .. " pets"), Font = FR, TextSize = 10,
+			TextColor3 = o.ogs > 0 and C.glow or C.sub, Position = UDim2.fromOffset(tx, 15), Size = UDim2.new(1, -tx - 80, 0, 14),
+			Parent = card})
+		label({Text = table.concat(parts, "  ·  "), Font = FR, TextSize = 11, TextColor3 = C.sub, RichText = true,
+			TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Position = UDim2.fromOffset(0, 34),
+			Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Parent = card})
+		if o.plr and o.ogs > 0 then
+			local b = tradeButton(card, o.plr, o.best and o.best.name, 64)
+			b.AnchorPoint = Vector2.new(1, 0)
+			b.Position = UDim2.new(1, 0, 0, 0)
+		end
+		popIn(card)
+	end
+	FleeceInfo.Text = #owners .. " bases · " .. ogBases .. " with OGs"
+	if #owners == 0 then
+		label({Text = "no animals found in bases", Font = FR, TextSize = 14, TextColor3 = C.sub,
+			TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 100), Parent = Flc.scroll})
+	end
+end
+FleeceScan.MouseButton1Click:Connect(scanBases)
+
+------------------------------------------------------------------ FIND TAB · username lookup
+local Fnd = Tabs.FIND
+local FindBox = input(Fnd.toolbar, "username or display name...")
+FindBox.AnchorPoint = Vector2.new(0, .5)
+FindBox.Position = UDim2.new(0, 5, .5, 0)
+FindBox.Size = UDim2.new(1, -92, 0, 26)
+local FindGo = primary(Fnd.toolbar, "SEARCH", 76, 26)
+FindGo.AnchorPoint = Vector2.new(1, .5)
+FindGo.Position = UDim2.new(1, -5, .5, 0)
+
+local Drop = new("Frame", {BackgroundColor3 = C.panel, Position = UDim2.fromOffset(1, 40), Size = UDim2.new(1, -2, 0, 0),
+	ClipsDescendants = true, ZIndex = 20, Visible = false, Parent = Fnd.page}, {corner(10)})
+stroke(C.accent, 1, .2).Parent = Drop
+local DropList = new("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 20, Parent = Drop}, {
+	new("UIListLayout", {Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}), pad(4, 4, 4, 4),
+})
+local FindEmpty = label({Text = "type a username — results drop down as you type", Font = FR, TextSize = 12, TextColor3 = C.sub,
+	TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true, Size = UDim2.new(1, 0, 0, 90), LayoutOrder = 1e9,
+	Parent = Fnd.scroll})
+
+local friendsCache, friendsAt = nil, 0
+local function onlineFriends()
+	if friendsCache and os.clock() - friendsAt < 30 then return friendsCache end
+	local ok, list = pcall(function() return LP:GetFriendsOnline(200) end)
+	friendsCache, friendsAt = {}, os.clock()
+	if ok and list then for _, f in ipairs(list) do friendsCache[f.VisitorId] = f end end
+	return friendsCache
+end
+
+local function baseSummary(name)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return nil end
+	local k = normalize(name)
+	for _, plot in ipairs(plots:GetChildren()) do
+		if normalize(plotOwner(plot)) == k then
+			local total, ogs = 0, 0
+			for _, d in ipairs(plot:GetDescendants()) do
+				if d:IsA("Model") then
+					local nm, e = animalNameOf(d)
+					if nm then total += 1; if e then ogs += 1 end end
+				end
+			end
+			return total, ogs
+		end
+	end
+end
+
+local function userCard(info)
+	FindEmpty.Visible = false
+	for _, c in ipairs(Fnd.scroll:GetChildren()) do
+		if c:IsA("Frame") and c:GetAttribute("uid") == info.id then c:Destroy() end
+	end
+	local plr = info.id and Players:GetPlayerByUserId(info.id)
+	local friend = info.id and onlineFriends()[info.id]
+	local status, col
+	if not info.id then status, col = "USER NOT FOUND", C.danger
+	elseif plr then status, col = "IN THIS SERVER", C.on
+	elseif friend then status, col = "ONLINE · FRIEND", C.glow
+	else status, col = "NOT IN THIS SERVER", C.dim end
+
+	local card = new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, 72),
+		LayoutOrder = -os.clock() * 100, Parent = Fnd.scroll}, {corner(12)})
+	card:SetAttribute("uid", info.id or -1)
+	stroke(plr and C.accent or C.stroke, 1, plr and .25 or 0).Parent = card
+	new("ImageLabel", {Image = info.id and avatarOf(info.id) or "", BackgroundColor3 = C.card2, Position = UDim2.fromOffset(8, 8),
+		Size = UDim2.fromOffset(56, 56), Parent = card}, {corner(28), stroke(col, 1.5, .1)})
+	new("Frame", {BackgroundColor3 = col, Position = UDim2.fromOffset(50, 50), Size = UDim2.fromOffset(12, 12), ZIndex = 3,
+		Parent = card}, {corner(6), stroke(C.bg, 2, 0)})
+	label({Text = info.display or info.name or info.query, Font = FB, TextSize = 14, Position = UDim2.fromOffset(74, 8),
+		Size = UDim2.new(1, -160, 0, 18), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	label({Text = "@" .. (info.name or info.query), Font = FR, TextSize = 11, TextColor3 = C.sub, Position = UDim2.fromOffset(74, 26),
+		Size = UDim2.new(1, -160, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	local extra = status
+	if plr then
+		local total, ogs = baseSummary(plr.Name)
+		if total then extra = extra .. "  ·  " .. ogs .. " OG / " .. total .. " pets" end
+	elseif friend and friend.LastLocation then
+		extra = extra .. "  ·  " .. tostring(friend.LastLocation)
+	end
+	label({Text = extra, Font = F, TextSize = 10, TextColor3 = col, Position = UDim2.fromOffset(74, 44),
+		Size = UDim2.new(1, -160, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd, Parent = card})
+	if plr then
+		tradeButton(card, plr, nil, 70)
+	else
+		local b = ghost(card, info.id and "OFFLINE" or "—", 70, 26)
+		b.TextColor3 = C.dim
+		b.AnchorPoint = Vector2.new(1, .5)
+		b.Position = UDim2.new(1, -10, .5, 0)
+	end
+	popIn(card)
+	local kids = {}
+	for _, c in ipairs(Fnd.scroll:GetChildren()) do if c:IsA("Frame") then table.insert(kids, c) end end
+	if #kids > 8 then
+		table.sort(kids, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+		kids[#kids]:Destroy()
+	end
+end
+
+local dropOpen = false
+local function closeDrop()
+	if not dropOpen then return end
+	dropOpen = false
+	tw(Drop, .2, {Size = UDim2.new(1, -2, 0, 0)}).Completed:Connect(function() if not dropOpen then Drop.Visible = false end end)
+end
+
+local function lookup(q)
+	q = q:gsub("^%s+", ""):gsub("%s+$", "")
+	if q == "" then return end
+	closeDrop()
+	local p = playerByName(q)
+	if p then userCard({id = p.UserId, name = p.Name, display = p.DisplayName}); return end
+	task.spawn(function()
+		local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(q) end)
+		if not ok or not id then userCard({query = q}); return end
+		local okN, realName = pcall(function() return Players:GetNameFromUserIdAsync(id) end)
+		userCard({id = id, name = okN and realName or q})
+	end)
+end
+
+local function openDrop(q)
+	clearGui(DropList)
+	local k = normalize(q)
+	if k == "" then closeDrop(); return end
+	local rows = 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		if rows >= 5 then break end
+		if p ~= LP and (normalize(p.Name):find(k, 1, true) or normalize(p.DisplayName):find(k, 1, true)) then
+			rows += 1
+			local r = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.card, BackgroundTransparency = .3,
+				Size = UDim2.new(1, 0, 0, 36), LayoutOrder = rows, ZIndex = 21, Parent = DropList}, {corner(8)})
+			new("ImageLabel", {Image = avatarOf(p.UserId), BackgroundColor3 = C.card2, Position = UDim2.fromOffset(4, 4),
+				Size = UDim2.fromOffset(28, 28), ZIndex = 22, Parent = r}, {corner(14)})
+			label({Text = p.DisplayName, Font = F, TextSize = 12, Position = UDim2.fromOffset(40, 3), Size = UDim2.new(1, -110, 0, 16),
+				ZIndex = 22, TextTruncate = Enum.TextTruncate.AtEnd, Parent = r})
+			label({Text = "@" .. p.Name, Font = FR, TextSize = 10, TextColor3 = C.sub, Position = UDim2.fromOffset(40, 19),
+				Size = UDim2.new(1, -110, 0, 14), ZIndex = 22, TextTruncate = Enum.TextTruncate.AtEnd, Parent = r})
+			label({Text = "● in server", Font = F, TextSize = 10, TextColor3 = C.on, TextXAlignment = Enum.TextXAlignment.Right,
+				AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.fromOffset(70, 36), ZIndex = 22, Parent = r})
+			r.MouseEnter:Connect(function() tw(r, .12, {BackgroundTransparency = 0}) end)
+			r.MouseLeave:Connect(function() tw(r, .12, {BackgroundTransparency = .3}) end)
+			r.MouseButton1Click:Connect(function()
+				FindBox.Text = p.Name
+				userCard({id = p.UserId, name = p.Name, display = p.DisplayName})
+				closeDrop()
+			end)
+		end
+	end
+	rows += 1
+	local r = new("TextButton", {AutoButtonColor = false, Text = "🔍  search Roblox for \"" .. q .. "\"", Font = F, TextSize = 11,
+		TextColor3 = C.glow, BackgroundColor3 = C.card, BackgroundTransparency = .3, Size = UDim2.new(1, 0, 0, 30),
+		LayoutOrder = rows, ZIndex = 21, Parent = DropList}, {corner(8)})
+	r.MouseButton1Click:Connect(function() lookup(q) end)
+	local h = 8 + (rows - 1) * 38 + 30 + 2
+	Drop.Visible = true
+	dropOpen = true
+	tw(Drop, .25, {Size = UDim2.new(1, -2, 0, h)}, Enum.EasingStyle.Back)
+end
+
+FindBox:GetPropertyChangedSignal("Text"):Connect(function() openDrop(FindBox.Text) end)
+FindBox.FocusLost:Connect(function(enter)
+	if enter then lookup(FindBox.Text) else task.delay(.25, closeDrop) end
+end)
+FindGo.MouseButton1Click:Connect(function() lookup(FindBox.Text) end)
+
+------------------------------------------------------------------ SETTINGS WIDGETS
+local function rowFrame(parent, order, h)
+	return new("Frame", {BackgroundColor3 = C.panel, BackgroundTransparency = GLASS, Size = UDim2.new(1, 0, 0, h or 50),
+		LayoutOrder = order, Parent = parent}, {corner(10), stroke()})
+end
+local function rowText(r, title, desc)
+	local t = label({Text = title, TextSize = 13, Position = UDim2.fromOffset(12, desc and 8 or 0),
+		Size = UDim2.new(1, -140, 0, desc and 18 or r.Size.Y.Offset), Parent = r})
+	local d
+	if desc then
+		d = label({Text = desc, Font = FR, TextSize = 11, TextColor3 = C.sub, Position = UDim2.fromOffset(12, 26),
+			Size = UDim2.new(1, -140, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd, Parent = r})
+	end
+	return t, d
+end
+local function toggleRow(parent, order, title, desc, key, onChange)
+	local r = rowFrame(parent, order)
+	rowText(r, title, desc)
+	local sw = new("TextButton", {AutoButtonColor = false, Text = "", AnchorPoint = Vector2.new(1, .5),
+		Position = UDim2.new(1, -12, .5, 0), Size = UDim2.fromOffset(42, 22), BackgroundColor3 = C.card2, Parent = r}, {corner(11)})
+	local knob = new("Frame", {Size = UDim2.fromOffset(16, 16), Position = UDim2.fromOffset(3, 3),
+		BackgroundColor3 = C.sub, Parent = sw}, {corner(8)})
+	table.insert(syncers, function()
+		local on = S[key]
+		tw(sw, .22, {BackgroundColor3 = on and C.accent or C.card2})
+		tw(knob, .25, {Position = UDim2.fromOffset(on and 23 or 3, 3), BackgroundColor3 = on and C.white or C.sub},
+			Enum.EasingStyle.Back)
+	end)
+	sw.MouseButton1Click:Connect(function()
+		S[key] = not S[key]
+		if onChange then onChange(S[key]) end
+		sync()
+	end)
+	return r
+end
+local function stepperRow(parent, order, title, desc, key, min, max, step, fmt, onChange)
+	local r = rowFrame(parent, order)
+	rowText(r, title, desc)
+	local plus = ghost(r, "+", 28, 26, "accent")
+	plus.AnchorPoint = Vector2.new(1, .5)
+	plus.Position = UDim2.new(1, -10, .5, 0)
+	local val = label({Font = FB, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(1, .5),
+		Position = UDim2.new(1, -40, .5, 0), Size = UDim2.fromOffset(46, 26), Parent = r})
+	local minus = ghost(r, "–", 28, 26, "accent")
+	minus.AnchorPoint = Vector2.new(1, .5)
+	minus.Position = UDim2.new(1, -88, .5, 0)
+	local function set(v)
+		S[key] = math.clamp(math.floor(v / step + .5) * step, min, max)
+		if onChange then onChange(S[key]) end
+		sync()
+	end
+	plus.MouseButton1Click:Connect(function() set(S[key] + step) end)
+	minus.MouseButton1Click:Connect(function() set(S[key] - step) end)
+	table.insert(syncers, function() val.Text = string.format(fmt, S[key]) end)
+	return r
+end
+local function buttonRow(parent, order, title, desc, btns)
+	local r = rowFrame(parent, order)
+	local _, d = rowText(r, title, desc)
+	local x, made = -10, {}
+	for i = #btns, 1, -1 do
+		local b = btns[i]
+		local obj, lbl
+		if b.primary then obj, lbl = primary(r, b.text, b.w or 70, 28) else obj = ghost(r, b.text, b.w or 70, 28, b.kind); lbl = obj end
+		obj.AnchorPoint = Vector2.new(1, .5)
+		obj.Position = UDim2.new(1, x, .5, 0)
+		x -= (b.w or 70) + 6
+		obj.MouseButton1Click:Connect(b.fn)
+		made[i] = lbl
+	end
+	return r, made, d
+end
+
+------------------------------------------------------------------ LOOP
+local loopToken, fullScan = 0, nil
+local function startLoop()
+	if S.loop then return end
+	S.loop = true
+	loopToken += 1
+	local my = loopToken
+	task.spawn(function()
+		while running and S.loop and loopToken == my do fullScan(); task.wait(S.loopInterval) end
+	end)
+	notify("LOOP STARTED", "rescanning every " .. S.loopInterval .. "s", nil, "trade")
+	sync()
+end
+local function killLoop()
+	if not S.loop then return end
+	S.loop = false
+	notify("LOOP KILLED", "rescan stopped", nil, "danger")
+	sync()
+end
+
+------------------------------------------------------------------ CFG TAB
+local board, boardBoot = nil, false
+local findBoard, hookBoard, scanBoard
+
+local Cfg = Tabs.CFG.scroll
+toggleRow(Cfg, 1, "Auto trade", "instantly trade OG holders from the liveboard", "autoTrade")
+toggleRow(Cfg, 2, "Best only", "per board update, only trade the top-priority OG", "bestOnly")
+stepperRow(Cfg, 3, "Trade cooldown", "seconds before re-trading the same player", "tradeCooldown", 2, 60, 1, "%ds")
+local _, _, remoteDesc = buttonRow(Cfg, 4, "Trade remote", "resolving...", {
+	{text = "RESCAN", w = 72, kind = "accent", fn = function()
+		tradeRemote = nil
+		resolveTradeRemote()
+		sync()
+		notify(tradeRemote and "REMOTE FOUND" or "NO TRADE REMOTE", tradeRemote and tradeRemote.Name or "set TRADE.path", nil,
+			tradeRemote and "trade" or "danger")
+	end},
+})
+table.insert(syncers, function()
+	remoteDesc.Text = tradeRemote and tradeRemote:GetFullName() or "not found — set TRADE.path"
+	remoteDesc.TextColor3 = tradeRemote and C.on or C.danger
+end)
+local _, _, boardDesc = buttonRow(Cfg, 5, "Liveboard", "searching...", {
+	{text = "RESCAN", w = 72, kind = "accent", fn = function() board = nil end},
+})
+toggleRow(Cfg, 6, "Auto alerts", "toast + sound on OG spawns / board hits", "auto")
+toggleRow(Cfg, 7, "Open GUI on OG", "pops the window back up if minimized", "autoOpen")
+toggleRow(Cfg, 8, "Alert every spawn", "toasts for non-OG spawns too", "notifyAll")
+local _, loopLbls = buttonRow(Cfg, 9, "Rescan loop", "full workspace rescan on a timer", {
+	{text = "LOOP", w = 64, primary = true, fn = startLoop},
+	{text = "KILL LOOP", w = 84, kind = "danger", fn = killLoop},
+})
+stepperRow(Cfg, 10, "Loop interval", "seconds between rescans", "loopInterval", 1, 30, 1, "%ds")
+table.insert(syncers, function() loopLbls[1].Text = S.loop and "LOOPING" or "LOOP" end)
+
+------------------------------------------------------------------ SETTINGS TAB
+local unload
+local Set = Tabs.SETTINGS.scroll
+toggleRow(Set, 1, "Notifications", "slide-in toasts", "notify")
+toggleRow(Set, 2, "Sound", "ping when a toast pops", "sound")
+stepperRow(Set, 3, "Toast duration", "how long toasts stay up", "notifyTime", 2, 15, 1, "%ds")
+stepperRow(Set, 4, "UI scale", "on top of auto-fit", "uiScale", .6, 1.4, .1, "%.1fx", function() applyLayout(true) end)
+local _, layoutLbls = buttonRow(Set, 5, "Layout", "AUTO detects PC by keyboard + screen width", {
+	{text = "LAYOUT: AUTO", w = 112, kind = "accent", fn = function()
+		S.layout = S.layout == "AUTO" and "PC" or S.layout == "PC" and "MOBILE" or "AUTO"
+		sync()
+		applyLayout(true)
+	end},
+})
+table.insert(syncers, function() layoutLbls[1].Text = "LAYOUT: " .. S.layout end)
+buttonRow(Set, 6, "Test toast", "preview a notification", {
+	{text = "TEST", w = 64, primary = true, fn = function()
+		local e = tracked[math.random(1, math.max(#tracked, 1))]
+		notify("OG ON LIVEBOARD", e and e.name or "Test", e and e.name, "og")
+	end},
+})
+buttonRow(Set, 7, "Reset counters", "caught / seen / trades back to zero", {
+	{text = "RESET", w = 64, kind = "danger", fn = function()
+		stats.seen, stats.og, stats.trades = 0, 0, 0
+		for _, e in ipairs(tracked) do e.seen = 0; e.last = nil end
+		updateCounters()
+		refreshOG()
+	end},
+})
+rowText(rowFrame(Set, 8, 40), "Toggle key (PC): " .. TOGGLE_KEY.Name)
+buttonRow(Set, 9, "Unload", "removes the GUI and stops everything", {
+	{text = "UNLOAD", w = 74, kind = "danger", fn = function() unload() end},
+})
+
+------------------------------------------------------------------ SPAWN DETECTION
+local seen = setmetatable({}, {__mode = "k"})
+
+local function pushEvent(evt)
+	eventId += 1
+	evt.id = eventId
+	table.insert(events, 1, evt)
+	if #events > 200 then table.remove(events) end
+	stats.seen += 1
+	if evt.og then
+		stats.og += 1
+		evt.entry.seen += 1
+		evt.entry.last = evt.t
+		CaughtScale.Scale = 1.2
+		tw(CaughtScale, .45, {Scale = 1}, Enum.EasingStyle.Back)
+		if S.auto then
+			notify(evt.kind == "board" and "OG ON LIVEBOARD" or "OG SPAWNED",
+				evt.name .. (evt.player and (" · @" .. evt.player.Name) or ""), evt.model or evt.name, "og")
+		end
+		if S.autoOpen and minimized then openGui() end
+	elseif S.auto and S.notifyAll then
+		notify("spawn", evt.name, evt.model, "info")
+	end
+	updateCounters()
+	if evt.id > feedFloor then eventCard(Feed.scroll, evt, feedCards); FeedEmpty.Visible = false end
+	if evt.id > liveFloor and (evt.og or S.allLogs) then eventCard(Live.scroll, evt, liveCards); LiveEmpty.Visible = false end
+	refreshOG()
+end
+
+local function onModel(m)
+	if not running or seen[m] then return end
+	if not m:IsA("Model") or not m:IsDescendantOf(workspace) then return end
+	if Players:GetPlayerFromCharacter(m) then return end
+	local nm, entry = animalNameOf(m)
+	if not nm then return end
+	local p = m.Parent
+	if p and p:IsA("Model") and seen[p] and normalize(rawName(p)) == normalize(rawName(m)) then return end
+	seen[m] = true
+	liveByKey[normalize(nm)] = m
+	if entry then entry.models[m] = true end
+	if plotOf(m) then return end
+	pushEvent({name = nm, model = m, t = os.clock(), og = entry ~= nil, entry = entry, kind = "spawn"})
+end
+
+fullScan = function()
+	for _, d in ipairs(workspace:GetDescendants()) do if d:IsA("Model") then onModel(d) end end
+end
+bind(workspace.DescendantAdded, function(d) if d:IsA("Model") then task.defer(onModel, d) end end)
+
+------------------------------------------------------------------ LIVEBOARD DETECTION
+local boardSig = setmetatable({}, {__mode = "k"})
+local boardHooks = {}
+
+findBoard = function()
+	if BOARD_PATH then return resolvePath(BOARD_PATH) end
+	local function check(root)
+		if not root then return nil end
+		for _, d in ipairs(root:GetDescendants()) do
+			local k = normalize(d.Name)
+			for _, n in ipairs(BOARD_NAMES) do if k:find(n, 1, true) then return d end end
+		end
+	end
+	return check(workspace) or check(LP:FindFirstChild("PlayerGui"))
+end
+
+local function textsUnder(inst)
+	local t = {}
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+			local s = d.ContentText ~= "" and d.ContentText or d.Text
+			if s ~= "" then table.insert(t, s) end
+		end
+	end
+	return t
+end
+
+scanBoard = function()
+	if not board or not board.Parent then return end
+	local batch = {}
+	for _, d in ipairs(board:GetDescendants()) do
+		if d:IsA("TextLabel") or d:IsA("TextButton") then
+			local e = matchInText(d.ContentText ~= "" and d.ContentText or d.Text)
+			if e then
+				local row, plr, texts = d.Parent, nil, {}
+				for _ = 1, 3 do
+					if not row or row == board then break end
+					texts = textsUnder(row)
+					plr = playerFromTexts(texts)
+					if plr or row.Parent == board then break end
+					row = row.Parent
+				end
+				if row and row ~= board then
+					local sig = e.key .. "|" .. table.concat(texts, "|")
+					if boardSig[row] ~= sig then
+						boardSig[row] = sig
+						local rawWho
+						for _, s in ipairs(texts) do
+							if not matchInText(s) and s:find("^@?[%w_]+$") and #s >= 3 then rawWho = s; break end
+						end
+						table.insert(batch, {entry = e, player = plr, rawWho = rawWho, t = os.clock(), old = not boardBoot})
+					end
+				end
+			end
+		end
+	end
+	if #batch == 0 then boardBoot = true; return end
+
+	table.sort(batch, function(a, b) return a.entry.prio < b.entry.prio end)
+	for _, be in ipairs(batch) do
+		eventId += 1
+		be.id = eventId
+		table.insert(boardEntries, 1, be)
+		if not be.old then
+			pushEvent({name = be.entry.name, t = be.t, og = true, entry = be.entry, player = be.player, kind = "board"})
+		end
+	end
+	while #boardEntries > 80 do table.remove(boardEntries) end
+
+	-- instant trade (skip whatever was already on the board when we hooked it)
+	if S.autoTrade and boardBoot then
+		for _, be in ipairs(batch) do
+			if be.player and not be.old then
+				sendTrade(be.player, be.entry.name)
+				if S.bestOnly then break end
+			end
+		end
+	end
+	boardBoot = true
+	rebuildBoardList()
+end
+
+hookBoard = function(b)
+	for _, c in ipairs(boardHooks) do c:Disconnect() end
+	table.clear(boardHooks)
+	board, boardBoot = b, false
+	table.insert(boardHooks, b.DescendantAdded:Connect(function() task.defer(scanBoard) end))
+	for _, d in ipairs(b:GetDescendants()) do
+		if d:IsA("TextLabel") then
+			table.insert(boardHooks, d:GetPropertyChangedSignal("Text"):Connect(function() task.defer(scanBoard) end))
+		end
+	end
+	table.insert(boardHooks, b.DescendantAdded:Connect(function(d)
+		if d:IsA("TextLabel") then
+			table.insert(boardHooks, d:GetPropertyChangedSignal("Text"):Connect(function() task.defer(scanBoard) end))
+		end
+	end))
+	scanBoard()
+end
+
+local function setBoardStatus()
+	local ok = board and board.Parent
+	BoardStatus.Text = ok and ("connected · " .. board.Name) or "searching..."
+	BoardStatus.TextColor3 = ok and C.on or C.sub
+	BoardDot.BackgroundColor3 = ok and C.on or C.dim
+	boardDesc.Text = ok and board:GetFullName() or "not found — set BOARD_PATH"
+	boardDesc.TextColor3 = ok and C.on or C.danger
+end
+
+task.spawn(function()
+	while running do
+		if not board or not board:IsDescendantOf(game) then
+			local b = findBoard()
+			if b then
+				hookBoard(b)
+				notify("LIVEBOARD FOUND", b.Name, nil, "trade")
+			else
+				board = nil
+			end
+			setBoardStatus()
+			if not b then
+				tw(BoardDot, .6, {BackgroundTransparency = .7}, Enum.EasingStyle.Sine)
+				task.wait(.6)
+				tw(BoardDot, .6, {BackgroundTransparency = 0}, Enum.EasingStyle.Sine)
+				task.wait(2.4)
+			end
+		else
+			scanBoard() -- catches rows that change without firing events
+			task.wait(1)
+		end
+	end
+end)
+
+------------------------------------------------------------------ LAYOUT
+local function detectMode()
+	if S.layout == "PC" then return "top" end
+	if S.layout == "MOBILE" then return "side" end
+	local vp = Camera.ViewportSize
+	if not UIS.TouchEnabled then return "top" end
+	if UIS.KeyboardEnabled and vp.X >= 1000 then return "top" end
+	return "side"
+end
+
+applyLayout = function(anim)
+	mode = detectMode()
+	local t = anim and .3 or 0
+	local top = mode == "top"
+	local size = top and UDim2.fromOffset(460, 600) or UDim2.fromOffset(570, 320)
+	tw(Main, t, {Size = size})
+	SubTitle.Text = top and "pc" or "mobile"
+	CollapseBtn.Visible = not top
+	TabLayout.FillDirection = top and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical
+	TabList.ScrollingDirection = top and Enum.ScrollingDirection.X or Enum.ScrollingDirection.Y
+	TabList.AutomaticCanvasSize = top and Enum.AutomaticSize.X or Enum.AutomaticSize.Y
+	TabList.CanvasSize = UDim2.new()
+	TabList.ScrollBarThickness = top and 0 or 2
+	if top then
+		tw(Rail, t, {Size = UDim2.new(1, -16, 0, 38)})
+		TabList.Position = UDim2.fromOffset(4, 4)
+		TabList.Size = UDim2.new(1, -8, 1, -8)
+		tw(Content, t, {Position = UDim2.fromOffset(8, 52), Size = UDim2.new(1, -16, 1, -60)})
+	else
+		local w = S.collapsed and 46 or 128
+		tw(Rail, t, {Size = UDim2.new(0, w, 1, -14)})
+		TabList.Position = UDim2.fromOffset(5, 40)
+		TabList.Size = UDim2.new(1, -10, 1, -46)
+		tw(Content, t, {Position = UDim2.fromOffset(w + 16, 7), Size = UDim2.new(1, -(w + 24), 1, -14)})
+		CollapseBtn.Text = S.collapsed and "»" or "«  collapse"
+	end
+	for _, def in ipairs(TAB_DEFS) do
+		local tb = Tabs[def.id]
+		if top then
+			local tx = TextService:GetTextSize(def.id, 11, F, Vector2.new(400, 40)).X
+			tb.btn.Size = UDim2.new(0, tx + 22, 1, 0)
+			tb.icon.Visible = false
+			tb.label.Position = UDim2.new()
+			tb.label.Size = UDim2.fromScale(1, 1)
+			tb.label.TextXAlignment = Enum.TextXAlignment.Center
+			tb.label.TextTransparency = 0
+			tb.ind.AnchorPoint = Vector2.new(.5, 1)
+			tb.ind.Position = UDim2.new(.5, 0, 1, -2)
+			tb.ind.Size = UDim2.new(1, -16, 0, 2)
+		else
+			tb.btn.Size = UDim2.new(1, 0, 0, 30)
+			tb.icon.Visible = true
+			tb.label.TextXAlignment = Enum.TextXAlignment.Left
+			tb.label.Position = UDim2.fromOffset(32, 0)
+			tb.label.Size = UDim2.new(1, -34, 1, 0)
+			tb.ind.AnchorPoint = Vector2.new(0, .5)
+			tb.ind.Position = UDim2.new(0, 0, .5, 0)
+			tb.ind.Size = UDim2.fromOffset(3, 14)
+			if S.collapsed then
+				tw(tb.icon, t, {Size = UDim2.fromScale(1, 1)})
+				tw(tb.label, t * .5, {TextTransparency = 1})
+			else
+				tw(tb.icon, t, {Size = UDim2.new(0, 30, 1, 0)})
+				tw(tb.label, t, {TextTransparency = 0})
+			end
+		end
+	end
+	local vp = Camera.ViewportSize
+	local fit = math.min((vp.X - 20) / size.X.Offset, (vp.Y - 20) / size.Y.Offset, 1)
+	targetScale = math.max(fit, .4) * S.uiScale
+	if not minimized then tw(MainScale, t, {Scale = targetScale}) end
+	NotifyScale.Scale = math.clamp(vp.X / 900, .75, 1)
+end
+
+CollapseBtn.MouseButton1Click:Connect(function() S.collapsed = not S.collapsed; applyLayout(true) end)
+
+local vpDeb = 0
+bind(Camera:GetPropertyChangedSignal("ViewportSize"), function()
+	vpDeb += 1
+	local my = vpDeb
+	task.delay(.25, function() if my == vpDeb and running then applyLayout(true) end end)
+end)
+
+------------------------------------------------------------------ OPEN / CLOSE / DRAG
+local FloatBtn = new("ImageButton", {Image = LOGO, BackgroundColor3 = C.bg, AutoButtonColor = false,
+	AnchorPoint = Vector2.new(.5, .5), Position = UDim2.new(0, 44, .42, 0), Size = UDim2.fromOffset(52, 52),
+	Visible = false, Parent = Gui}, {corner(16)})
+local floatSt = stroke(C.white, 1.5, .1)
+floatSt.Parent = FloatBtn
+table.insert(spinGrads, new("UIGradient", {Color = ColorSequence.new({ColorSequenceKeypoint.new(0, C.accent2),
+	ColorSequenceKeypoint.new(.5, C.glow), ColorSequenceKeypoint.new(1, C.accent2)}), Parent = floatSt}))
+local FloatScale = new("UIScale", {Parent = FloatBtn})
+
+openGui = function()
+	minimized = false
+	Main.Visible = true
+	MainScale.Scale = targetScale * .6
+	tw(MainScale, .45, {Scale = targetScale}, Enum.EasingStyle.Back)
+	LogoScale.Scale = .5
+	tw(LogoScale, .6, {Scale = 1}, Enum.EasingStyle.Elastic)
+	tw(FloatScale, .2, {Scale = 0}).Completed:Connect(function() if not minimized then FloatBtn.Visible = false end end)
+end
+closeGui = function()
+	minimized = true
+	tw(MainScale, .28, {Scale = 0}, Enum.EasingStyle.Back, Enum.EasingDirection.In).Completed:Connect(function()
+		if minimized then Main.Visible = false end
+	end)
+	FloatBtn.Visible = true
+	FloatScale.Scale = 0
+	tw(FloatScale, .4, {Scale = 1}, Enum.EasingStyle.Back)
+end
+MinBtn.MouseButton1Click:Connect(closeGui)
+
+local function makeDraggable(handle, target, onClick)
+	local dragging, moved, startIn, startPos = false, false, nil, nil
+	handle.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, moved, startIn, startPos = true, false, i.Position, target.Position
+			local c
+			c = i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then
+					dragging = false
+					c:Disconnect()
+					if not moved and onClick then onClick() end
+				end
+			end)
+		end
+	end)
+	bind(UIS.InputChanged, function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - startIn
+			if math.abs(d.X) + math.abs(d.Y) > 5 then moved = true end
+			if moved then
+				target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			end
+		end
+	end)
+end
+makeDraggable(Header, Main)
+makeDraggable(FloatBtn, FloatBtn, function() openGui() end)
+
+bind(UIS.InputBegan, function(i, gp)
+	if gp then return end
+	if i.KeyCode == TOGGLE_KEY then if minimized then openGui() else closeGui() end end
+end)
+
+------------------------------------------------------------------ LOOPS
+bind(RunService.Heartbeat, function(dt)
+	for i = #spinGrads, 1, -1 do
+		local g = spinGrads[i]
+		if not g.Parent then table.remove(spinGrads, i) else g.Rotation = (g.Rotation + dt * 90) % 360 end
+	end
+	if minimized then return end
+	for i = #spinners, 1, -1 do
+		local s = spinners[i]
+		if not s.vf.Parent then
+			table.remove(spinners, i)
+		else
+			s.a += dt * .8
+			s.cam.CFrame = CFrame.lookAt(s.center + Vector3.new(math.sin(s.a) * s.dist, s.h, math.cos(s.a) * s.dist), s.center)
+		end
+	end
+end)
+
+task.spawn(function()
+	local tick6 = 0
+	while running do
+		for i = #agoLabels, 1, -1 do
+			local a = agoLabels[i]
+			if not a.l.Parent then table.remove(agoLabels, i) else a.l.Text = a.p .. ago(a.t) end
+		end
+		pcall(refreshOG)
+		tick6 += 1
+		if tick6 >= 6 then
+			tick6 = 0
+			if pageCount > 1 and os.clock() - lastInteract > 8 and current == "OG" then goPage(page + 1) end
+		end
+		task.wait(1)
+	end
+end)
+
+------------------------------------------------------------------ UNLOAD
+unload = function()
+	running = false
+	S.loop = false
+	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	for _, c in ipairs(boardHooks) do pcall(function() c:Disconnect() end) end
+	pcall(function() Gui:Destroy() end)
+	_G.__INFIN_OG_UNLOAD = nil
+end
+_G.__INFIN_OG_UNLOAD = unload
+
+------------------------------------------------------------------ BOOT
+resolveTradeRemote()
+rebuildOGCarousel()
+rebuildBoardList()
+updateCounters()
+sync()
+setBoardStatus()
+applyLayout(false)
+selectTab("LIVE")
+openGui()
+
+task.delay(.6, function()
+	notify("INFIN OG SNIPER", mode == "top" and ("pc · " .. TOGGLE_KEY.Name .. " to toggle") or "mobile · tap – to minimize", nil, "og")
+	if not tradeRemote then notify("NO TRADE REMOTE", "set TRADE.path at the top", nil, "danger") end
+end)
+task.delay(1, fullScan)
